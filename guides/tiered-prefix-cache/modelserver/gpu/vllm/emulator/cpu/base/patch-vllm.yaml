@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decode
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: modelserver
+          image: localhost/kv-cache-offload-vllm:dev
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              exec vllm serve \
+                Qwen/Qwen3-8B \
+                --tensor-parallel-size=1 \
+                --max-model-len=8192 \
+                --gpu-memory-utilization=0.85 \
+                --kv-cache-memory-bytes=1073741824 \
+                --enable-prefix-caching \
+                --prefix-caching-hash-algo=sha256_cbor \
+                --scheduling-policy=priority \
+                --kv-transfer-config \
+                "{\"kv_connector\":\"SimpleCPUOffloadConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"fast_cpu_bytes\":${FAST_CPU_BYTES},\"slow_cpu_bytes\":${SLOW_CPU_BYTES},\"priority_threshold\":${PRIORITY_THRESHOLD},\"fast_cpu_bandwidth_gbps\":${FAST_CPU_BANDWIDTH_GBPS},\"fast_cpu_latency_us\":${FAST_CPU_LATENCY_US},\"slow_cpu_bandwidth_gbps\":${SLOW_CPU_BANDWIDTH_GBPS},\"slow_cpu_latency_us\":${SLOW_CPU_LATENCY_US}}}"
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: llm-d-hf-token
+                  key: HF_TOKEN
+            - name: VLLM_SERVER_DEV_MODE
+              value: "1"
+            - name: FAST_CPU_BYTES
+              value: "8589934592"
+            - name: SLOW_CPU_BYTES
+              value: "34359738368"
+            - name: PRIORITY_THRESHOLD
+              value: "1"
+            - name: FAST_CPU_BANDWIDTH_GBPS
+              value: "0"
+            - name: FAST_CPU_LATENCY_US
+              value: "0"
+            - name: SLOW_CPU_BANDWIDTH_GBPS
+              value: "0"
+            - name: SLOW_CPU_LATENCY_US
+              value: "0"
+          resources:
+            requests:
+              cpu: "8"
+              memory: 96Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "16"
+              memory: 128Gi
+              nvidia.com/gpu: 1
+          securityContext:
+            capabilities:
+              add:
+                - IPC_LOCK

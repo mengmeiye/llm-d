@@ -21,6 +21,7 @@ Each path is a self-contained deployment using a specific offloading implementat
 | Path | Implementation | Tiers | Directory |
 | ---- | -------------- | ----- | --------- |
 | **vLLM native** | vLLM `OffloadingConnector` | CPU RAM, CPU RAM + Filesystem | `modelserver/gpu/vllm/native/` |
+| **vLLM three-tier emulator (experimental)** | Modified vLLM `SimpleCPUOffloadConnector` | Fast pinned-host pool, slow pinned-host pool | `modelserver/gpu/vllm/emulator/` |
 | **AMD (ROCm)** | vLLM `OffloadingConnector`, [LMCache](https://lmcache.ai) connector | CPU RAM, Filesystem | `modelserver/amd/vllm/native/`, `modelserver/amd/vllm/lmcache-connector/` |
 | **LMCache** | [LMCache](https://lmcache.ai) connector | CPU RAM, Filesystem | `modelserver/gpu/vllm/lmcache-connector/` |
 | **MooncakeStore** | MooncakeStore connector | CPU RAM, Filesystem | `modelserver/gpu/vllm/mooncake-store/` |
@@ -31,6 +32,12 @@ Each path is a self-contained deployment using a specific offloading implementat
 The tiers each path supports differ — see the table above. For example, the vLLM native path also extends to a shared filesystem via multi-tier offloading (`TieringOffloadingSpec`), spilling from CPU RAM to shared storage (HBM → CPU RAM → filesystem).
 
 We recommend each model server's **native** offloading path: the `OffloadingConnector` on vLLM, and HiCache — its equivalent — on SGLang. Native offloading is low-overhead, requires no extra components, and enabling the CPU tier is appropriate in almost all deployments. Reach for a non-native connector (for example LMCache) only when you need a capability the native path does not yet provide.
+
+The three-tier emulator is a research path for evaluating placement policies
+before secondary-memory hardware is widely available. It requires a custom
+vLLM image and does not replace the recommended native path. See its
+[`README`](modelserver/gpu/vllm/emulator/README.md) for the image, memory, and
+cold-cache reset procedure.
 
 ## Default Configuration
 
@@ -189,6 +196,19 @@ export VARIANT=cpu       # cpu | fs
 export INFRA_PROVIDER=base  # base | gke
 kubectl apply -n ${NAMESPACE} -k ${REPO_ROOT}/guides/tiered-prefix-cache/modelserver/gpu/vllm/${CONNECTOR}/${VARIANT}/${INFRA_PROVIDER}/
 ```
+
+#### vLLM three-tier emulator — experimental
+
+Build and publish the modified vLLM image, then replace the placeholder image
+in the overlay. Review the pool sizes and pod memory first.
+
+```bash
+kubectl apply -n ${NAMESPACE} -k ${REPO_ROOT}/guides/tiered-prefix-cache/modelserver/gpu/vllm/emulator/cpu/base/
+```
+
+Use the dedicated llm-d-benchmark scenario for parameter sweeps and result
+collection. The direct overlay is intended for deployment inspection and
+manual smoke tests.
 
 #### vLLM native — CPU RAM + Filesystem
 
