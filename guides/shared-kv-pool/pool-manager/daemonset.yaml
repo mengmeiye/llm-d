@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kv-pool-manager
+spec:
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      # Pin to the GPU nodes that run the model servers.
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: manager
+          # Any image with Python 3.10+; the manager uses the standard library only.
+          image: docker.io/library/python:3.12-slim
+          command: ["python3", "/opt/kv-pool-manager/kv_pool_manager.py", "serve"]
+          env:
+            # The pool name, under /kv-pool on the node. Model servers mount
+            # the same name; one pool per model and KV layout.
+            - name: KV_POOL_NAME
+              value: qwen3-8b
+            # Identity of the pool generation. A model server whose layout
+            # differs must use another pool name: create refuses to reuse a
+            # generation whose config differs.
+            - name: KV_POOL_CONFIG
+              value: '{"model":"Qwen/Qwen3-8B","blockSize":64,"dtype":"bfloat16"}'
+            # Eviction capacity. Keep it below the tmpfs size and the node
+            # memory you can spare next to the model servers' CPU tiers.
+            - name: KV_POOL_CAPACITY_BYTES
+              value: "68719476736"  # 64 GiB
+            - name: KV_POOL_HIGH_WATERMARK
+              value: "0.90"
+            - name: KV_POOL_LOW_WATERMARK
+              value: "0.75"
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "test -s /kv-pool/.${KV_POOL_NAME}.ready"]
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+          volumeMounts:
+            - name: kv-pool
+              mountPath: /kv-pool
+            - name: manager
+              mountPath: /opt/kv-pool-manager
+              readOnly: true
+      volumes:
+        # tmpfs on the node: /dev/shm is a tmpfs mount on every Linux node, so
+        # the pool lives in node memory and survives pod restarts but not a
+        # node reboot.
+        - name: kv-pool
+          hostPath:
+            path: /dev/shm/llm-d-kv-pool
+            type: DirectoryOrCreate
+        - name: manager
+          configMap:
+            name: kv-pool-manager

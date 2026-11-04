@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Node-local lifecycle manager for the shared KV pool. One pod per GPU node
+# publishes the pool before any model server attaches, keeps it within its
+# eviction watermarks, and leaves it in place when the manager or a model
+# server restarts.
+resources:
+  - daemonset.yaml
+
+namePrefix: shared-kv-pool-
+
+labels:
+  - pairs:
+      llm-d.ai/guide: shared-kv-pool
+      app.kubernetes.io/component: kv-pool-manager
+    includeSelectors: true
+    includeTemplates: true
+
+configMapGenerator:
+  - name: kv-pool-manager
+    files:
+      - kv_pool_manager.py
+    options:
+      disableNameSuffixHash: true

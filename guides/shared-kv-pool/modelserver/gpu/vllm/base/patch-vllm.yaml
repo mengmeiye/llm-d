@@ -1,0 +1,151 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decode
+spec:
+  replicas: 2
+  template:
+    spec:
+      # Each GPU node has its own pool, shared by the replicas on that node;
+      # the router credits a pool's blocks only to them. Pack replicas onto
+      # as few nodes as fit, so more of them share a pool.
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    llm-d.ai/guide: shared-kv-pool
+                    llm-d.ai/role: decode
+      initContainers:
+        # Wait until the node's kv-pool-manager has published the pool, and
+        # hand its generation to vLLM, which refuses any other generation.
+        - name: pool-attach
+          image: docker.io/library/busybox:1.37
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until test -s "/kv-pool/.${KV_POOL_NAME}.ready"; do
+                echo "waiting for the kv-pool-manager to publish ${KV_POOL_NAME}"; sleep 2
+              done
+              cp "/kv-pool/.${KV_POOL_NAME}.ready" /pool-env/generation
+          env:
+            - name: KV_POOL_NAME
+              value: qwen3-8b
+          volumeMounts:
+            - name: kv-pool
+              mountPath: /kv-pool
+              readOnly: true
+            - name: pool-env
+              mountPath: /pool-env
+      containers:
+        - name: modelserver
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              GENERATION=$(cat /pool-env/generation)
+              # The node pool is the secondary tier behind each replica's
+              # private CPU tier. The router marks its blocks (medium STORAGE)
+              # shared by the node.
+              POOL_TIER="{\"type\":\"fs\",\"root_dir\":\"/kv-pool/${KV_POOL_NAME}\",\"pool_generation\":\"${GENERATION}\""
+              POOL_TIER="${POOL_TIER},\"enable_kv_events\":true,\"locality\":\"LOCAL\",\"shutdown_drain_timeout_s\":10"
+              POOL_TIER="${POOL_TIER},\"n_read_threads\":16,\"n_write_threads\":8}"
+              OFFLOAD="{\"spec_name\":\"TieringOffloadingSpec\",\"cpu_bytes_to_use\":${CPU_BYTES_TO_USE},\"secondary_tiers\":[${POOL_TIER}]}"
+              KV_EVENTS="{\"enable_kv_cache_events\":true,\"publisher\":\"zmq\",\"endpoint\":\"tcp://*:5556\""
+              KV_EVENTS="${KV_EVENTS},\"replay_endpoint\":\"tcp://*:5559\",\"topic\":\"kv@${POD_IP}:8000@Qwen/Qwen3-8B\"}"
+              exec vllm serve Qwen/Qwen3-8B \
+                --enable-scale-out \
+                --disable-access-log-for-endpoints=/health,/metrics,/v1/models,/v1/completions/render,/v1/chat/completions/render \
+                --block-size=64 \
+                --max-model-len=32768 \
+                --prefix-caching-hash-algo=sha256_cbor \
+                --kv-events-config "${KV_EVENTS}" \
+                --kv-transfer-config "{\"kv_connector\":\"OffloadingConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":${OFFLOAD}}" \
+                --shutdown-timeout=45
+          ports:
+            - containerPort: 5556
+              name: kv-events
+              protocol: TCP
+            - containerPort: 5559
+              name: kv-replay
+              protocol: TCP
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: llm-d-hf-token
+                  key: HF_TOKEN
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: KV_POOL_NAME
+              value: qwen3-8b
+            # Per-replica CPU tier; it lives in this pod's /dev/shm.
+            - name: CPU_BYTES_TO_USE
+              value: "17179869184"  # 16 GiB
+            # Block file names hash token content from this seed; every
+            # replica that shares the pool must use the same value.
+            - name: PYTHONHASHSEED
+              value: "0"
+            - name: DO_NOT_TRACK
+              value: "1"
+          resources:
+            limits:
+              cpu: '8'
+              memory: 64Gi
+              nvidia.com/gpu: 1
+            requests:
+              cpu: '4'
+              memory: 48Gi
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - mountPath: /dev/shm
+              name: shm
+            - mountPath: /kv-pool
+              name: kv-pool
+            - mountPath: /pool-env
+              name: pool-env
+              readOnly: true
+            - mountPath: /.cache
+              name: torch-compile-cache
+            - mountPath: /.triton
+              name: triton-cache
+            - mountPath: /.config
+              name: vllm-config
+          startupProbe:
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 120
+          livenessProbe:
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+      volumes:
+        # Holds the CPU tier (CPU_BYTES_TO_USE) plus headroom.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 20Gi
+        # The node's shared pool, published by the kv-pool-manager DaemonSet.
+        - name: kv-pool
+          hostPath:
+            path: /dev/shm/llm-d-kv-pool
+            type: Directory
+        - name: pool-env
+          emptyDir: {}
+        - name: torch-compile-cache
+          emptyDir: {}
+        - name: triton-cache
+          emptyDir: {}
+        - name: vllm-config
+          emptyDir: {}

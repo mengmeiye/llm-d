@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../../recipes/modelserver/base/single-host/default
+
+namePrefix: shared-kv-pool-gpu-vllm-
+
+components:
+  - ../../../../../recipes/modelserver/components/images/gpu-vllm/release
+  - ../../../../../recipes/modelserver/components/graceful-shutdown
+
+labels:
+  - pairs:
+      llm-d.ai/guide: shared-kv-pool
+      llm-d.ai/model: Qwen3-8B
+      llm-d.ai/accelerator-variant: gpu
+      llm-d.ai/accelerator-vendor: nvidia
+    includeSelectors: true
+    includeTemplates: true
+
+# Managed fs pools (`pool_generation` on the fs tier) are not in the release
+# image. Point this at a vLLM image that has them; keep the name as baked by
+# the gpu-vllm/release component, or the override is ignored.
+# TODO: Remove the override once a vLLM release ships managed fs pools.
+images:
+  - name: docker.io/vllm/vllm-openai
+    newName: docker.io/vllm/vllm-openai
+    newTag: v0.31.0
+
+patches:
+  - path: patch-vllm.yaml
