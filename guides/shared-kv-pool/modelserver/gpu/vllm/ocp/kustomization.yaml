@@ -1,8 +1,21 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# OpenShift: hostPath volumes need an SCC that allows them, such as
-# hostmount-anyuid, granted to the model server service account
-# (see the README). SELinux nodes also need the pool directory labelled
-# container_file_t, which the kv-pool-manager's hostPath creates.
+# OpenShift: the node pool is a hostPath on the node's tmpfs, which carries no
+# container SELinux label, so the model servers run as spc_t to read and write
+# it. That needs an SCC that allows it, such as privileged, granted to the
+# model server service account (see the README).
 resources:
   - ../base
+
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: decode
+      spec:
+        template:
+          spec:
+            securityContext:
+              seLinuxOptions:
+                type: spc_t

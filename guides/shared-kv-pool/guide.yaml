@@ -27,7 +27,7 @@ env:
     INFRA_PROVIDER: {default: base, values: [base, ocp]}
 
     MODEL: {default: "Qwen/Qwen3-8B"}
-    # Must match KV_POOL_NAME in pool-manager/daemonset.yaml and the model
+    # Must match KV_POOL_NAME in pool-manager/base/daemonset.yaml and the model
     # server overlay.
     KV_POOL_NAME: {default: qwen3-8b}
 
@@ -56,17 +56,18 @@ prerequisites:
     - when: {INFRA_PROVIDER: [ocp]}
       skip_in: [ci]
       run: |
-        # The pool lives on a hostPath. Let the pool manager and the model
-        # servers mount it (cluster-admin).
-        oc adm policy add-scc-to-user hostmount-anyuid -z default -n ${NAMESPACE}
-        oc adm policy add-scc-to-user hostmount-anyuid -z ${GUIDE_NAME}-gpu-vllm-sa -n ${NAMESPACE}
+        # The pool is a hostPath on node tmpfs, which carries no container
+        # SELinux label: let the pool manager and the model servers run as
+        # spc_t (cluster-admin).
+        oc adm policy add-scc-to-user privileged -z ${GUIDE_NAME}-kv-pool-manager -n ${NAMESPACE}
+        oc adm policy add-scc-to-user privileged -z ${GUIDE_NAME}-gpu-vllm-sa -n ${NAMESPACE}
 
 deploy:
   pool_manager:
     - run: |
         # One pool manager per GPU node publishes the node's pool before any
         # model server attaches to it.
-        kubectl apply -n ${NAMESPACE} -k ${REPO_ROOT}/guides/${GUIDE_NAME}/pool-manager/
+        kubectl apply -n ${NAMESPACE} -k ${REPO_ROOT}/guides/${GUIDE_NAME}/pool-manager/${INFRA_PROVIDER}/
         kubectl rollout status -n ${NAMESPACE} daemonset/${GUIDE_NAME}-kv-pool-manager --timeout=300s
   router_values:
     - run: |
@@ -149,7 +150,7 @@ cleanup:
           kubectl exec -n ${NAMESPACE} ${POOL_POD} -- \
             python3 /opt/kv-pool-manager/kv_pool_manager.py destroy --name ${KV_POOL_NAME} --generation ${GENERATION}
         done
-        kubectl delete -n ${NAMESPACE} -k ${REPO_ROOT}/guides/${GUIDE_NAME}/pool-manager/
+        kubectl delete -n ${NAMESPACE} -k ${REPO_ROOT}/guides/${GUIDE_NAME}/pool-manager/${INFRA_PROVIDER}/
   rest:
     - run: helm uninstall ${GUIDE_NAME} -n ${NAMESPACE}
     - run: kubectl delete -n ${NAMESPACE} -k ${REPO_ROOT}/guides/recipes/modelserver/components/monitoring --ignore-not-found=true

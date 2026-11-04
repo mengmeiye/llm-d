@@ -5,6 +5,7 @@ kind: Kustomization
 # eviction watermarks, and leaves it in place when the manager or a model
 # server restarts.
 resources:
+  - serviceaccount.yaml
   - daemonset.yaml
 
 namePrefix: shared-kv-pool-

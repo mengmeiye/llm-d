@@ -110,10 +110,11 @@ On OpenShift, allow the pool's hostPath volume:
 <!-- llm-d-cicd:skip start -->
 ```bash
 # only when INFRA_PROVIDER=ocp:
-# The pool lives on a hostPath. Let the pool manager and the model
-# servers mount it (cluster-admin).
-oc adm policy add-scc-to-user hostmount-anyuid -z default -n ${NAMESPACE}
-oc adm policy add-scc-to-user hostmount-anyuid -z ${GUIDE_NAME}-gpu-vllm-sa -n ${NAMESPACE}
+# The pool is a hostPath on node tmpfs, which carries no container
+# SELinux label: let the pool manager and the model servers run as
+# spc_t (cluster-admin).
+oc adm policy add-scc-to-user privileged -z ${GUIDE_NAME}-kv-pool-manager -n ${NAMESPACE}
+oc adm policy add-scc-to-user privileged -z ${GUIDE_NAME}-gpu-vllm-sa -n ${NAMESPACE}
 ```
 <!-- llm-d-cicd:skip end -->
 <!-- guide:prerequisites.openshift_scc end -->
@@ -126,7 +127,7 @@ oc adm policy add-scc-to-user hostmount-anyuid -z ${GUIDE_NAME}-gpu-vllm-sa -n $
 ```bash
 # One pool manager per GPU node publishes the node's pool before any
 # model server attaches to it.
-kubectl apply -n ${NAMESPACE} -k ${REPO_ROOT}/guides/${GUIDE_NAME}/pool-manager/
+kubectl apply -n ${NAMESPACE} -k ${REPO_ROOT}/guides/${GUIDE_NAME}/pool-manager/${INFRA_PROVIDER}/
 kubectl rollout status -n ${NAMESPACE} daemonset/${GUIDE_NAME}-kv-pool-manager --timeout=300s
 ```
 <!-- guide:deploy.pool_manager end -->
@@ -265,7 +266,7 @@ for POOL_POD in $(kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/componen
   kubectl exec -n ${NAMESPACE} ${POOL_POD} -- \
     python3 /opt/kv-pool-manager/kv_pool_manager.py destroy --name ${KV_POOL_NAME} --generation ${GENERATION}
 done
-kubectl delete -n ${NAMESPACE} -k ${REPO_ROOT}/guides/${GUIDE_NAME}/pool-manager/
+kubectl delete -n ${NAMESPACE} -k ${REPO_ROOT}/guides/${GUIDE_NAME}/pool-manager/${INFRA_PROVIDER}/
 ```
 <!-- guide:cleanup.pool end -->
 
@@ -291,7 +292,7 @@ kubectl delete namespace ${NAMESPACE}
 
 ## Tuning
 
-- **Pool capacity.** `KV_POOL_CAPACITY_BYTES` with `KV_POOL_HIGH_WATERMARK`/`KV_POOL_LOW_WATERMARK` in `pool-manager/daemonset.yaml`. Eviction removes the least recently used block files; a replica that loses the race for a block recomputes it.
+- **Pool capacity.** `KV_POOL_CAPACITY_BYTES` with `KV_POOL_HIGH_WATERMARK`/`KV_POOL_LOW_WATERMARK` in `pool-manager/base/daemonset.yaml`. Eviction removes the least recently used block files; a replica that loses the race for a block recomputes it.
 - **Router tier weight.** The `storage` weight (0.6) ranks a pool hit below a replica's own GPU (1.0) and CPU (0.8) hits, since a pool hit is copied into the replica's CPU tier before the GPU load.
 - **Cross-node pool.** To survive node loss, point the `fs` tier's `root_dir` at a pool on a `ReadWriteMany` volume instead of the node's tmpfs, run one pool manager for it (a Deployment with one replica instead of the DaemonSet), and set `shared: pool` on the router's `storage` tier. The router keys shared scopes by the event's medium, and every `fs` tier reports `STORAGE`, so a deployment uses either node-scoped or pool-scoped sharing, not both.
 - **Replica placement.** The model servers prefer to pack onto one node so more replicas share a pool. Use `requiredDuringScheduling` affinity to force it.
