@@ -98,5 +98,8 @@ router:
     type: vllm
     targetPorts:
       - number: 8000
+    # The role label keeps the pool managers, which share the guide label,
+    # out of the InferencePool.
     matchLabels:
       llm-d.ai/guide: "shared-kv-pool"
+      llm-d.ai/role: "decode"

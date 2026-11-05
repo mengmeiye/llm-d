@@ -10,9 +10,11 @@ resources:
 
 namePrefix: shared-kv-pool-
 
+# Not llm-d.ai/guide: the model server InferencePool and the guide's pod
+# checks select on it, and the pool managers serve no inference.
 labels:
   - pairs:
-      llm-d.ai/guide: shared-kv-pool
+      app.kubernetes.io/part-of: shared-kv-pool
       app.kubernetes.io/component: kv-pool-manager
     includeSelectors: true
     includeTemplates: true
