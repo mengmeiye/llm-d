@@ -94,14 +94,20 @@ spec:
               value: "0"
             - name: DO_NOT_TRACK
               value: "1"
+          # Pool blocks are tmpfs pages, charged to the memory limit of the
+          # pod that wrote them and not reclaimable without swap. Size the
+          # limit for the vLLM process (~20 GiB here), its CPU tier
+          # (CPU_BYTES_TO_USE) and the whole pool (KV_POOL_CAPACITY_BYTES),
+          # because one replica may write most of the pool. The pool
+          # manager's eviction bounds that last term.
           resources:
             limits:
               cpu: '8'
-              memory: 64Gi
+              memory: 128Gi
               nvidia.com/gpu: 1
             requests:
               cpu: '4'
-              memory: 48Gi
+              memory: 64Gi
               nvidia.com/gpu: 1
           volumeMounts:
             - mountPath: /dev/shm

@@ -30,8 +30,10 @@ spec:
             # generation whose config differs.
             - name: KV_POOL_CONFIG
               value: '{"model":"Qwen/Qwen3-8B","blockSize":64,"dtype":"bfloat16"}'
-            # Eviction capacity. Keep it below the tmpfs size and the node
-            # memory you can spare next to the model servers' CPU tiers.
+            # Eviction capacity. Keep it below the tmpfs size. Pool pages
+            # count against the memory limit of the model server that wrote
+            # them, so raising this needs the same increase in the model
+            # servers' memory limit.
             - name: KV_POOL_CAPACITY_BYTES
               value: "68719476736"  # 64 GiB
             - name: KV_POOL_HIGH_WATERMARK

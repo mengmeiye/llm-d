@@ -42,7 +42,7 @@ a `ReadWriteMany` volume and mark the tier `shared: pool` (see
 - Have the [proper client tools installed on your local system](../../helpers/client-setup/README.md) to use this guide.
 - Create a [HuggingFace token](../../helpers/hf-token.md) and export it as `HF_TOKEN` in your shell.
 - A vLLM image with managed `fs` pools (`pool_generation`), and an llm-d router image with shared tiers (`kvCacheBackendConfigs[].shared`). Set them in `modelserver/gpu/vllm/base/kustomization.yaml` and `router/shared-kv-pool.values.yaml`.
-- Node memory for the pool (`KV_POOL_CAPACITY_BYTES`, 64 GiB by default) in addition to each replica's CPU tier. `/dev/shm` on the node must be large enough to hold it.
+- Node memory for the pool (`KV_POOL_CAPACITY_BYTES`, 64 GiB by default) in addition to each replica's CPU tier. `/dev/shm` on the node must be large enough to hold it. Pool blocks are tmpfs pages charged to the memory limit of the model server that wrote them, so each model server's memory limit covers its process, its CPU tier and the whole pool (128Gi by default).
 - (Optional) Install the [monitoring stack](../../docs/operations/observability/setup.md) if you plan to enable Prometheus monitoring.
 
 ### Get the guide
@@ -287,12 +287,13 @@ kubectl delete namespace ${NAMESPACE}
 
 - **A model server stays in `Init`.** Its node has no published pool yet. Check `kubectl logs -n ${NAMESPACE} -l app.kubernetes.io/component=kv-pool-manager`.
 - **vLLM fails with `expected <generation>`.** The pool was destroyed and recreated while the pod was starting. Delete the pod so its init container reads the new generation.
+- **A model server is OOM-killed under load.** Its memory limit is below its process plus its CPU tier plus the pool capacity; pool pages it wrote count against it. Raise the limit or lower `KV_POOL_CAPACITY_BYTES`.
 - **`destroy` exits with code 3.** A model server still holds the generation. Wait for it to terminate; never remove the pool directory by hand while one is attached.
 - **No external prefix-cache hits on the second replica.** Every replica sharing a pool must use the same model, `--block-size`, dtype, `--prefix-caching-hash-algo`, and `PYTHONHASHSEED`.
 
 ## Tuning
 
-- **Pool capacity.** `KV_POOL_CAPACITY_BYTES` with `KV_POOL_HIGH_WATERMARK`/`KV_POOL_LOW_WATERMARK` in `pool-manager/base/daemonset.yaml`. Eviction removes the least recently used block files; a replica that loses the race for a block recomputes it.
+- **Pool capacity.** `KV_POOL_CAPACITY_BYTES` with `KV_POOL_HIGH_WATERMARK`/`KV_POOL_LOW_WATERMARK` in `pool-manager/base/daemonset.yaml`. Eviction removes the least recently used block files; a replica that loses the race for a block recomputes it. Raise the model servers' memory limit by the same amount: a replica that writes most of the pool is charged for it, and without swap the kernel kills its container instead of reclaiming the pages.
 - **Router tier weight.** The `storage` weight (0.6) ranks a pool hit below a replica's own GPU (1.0) and CPU (0.8) hits, since a pool hit is copied into the replica's CPU tier before the GPU load.
 - **Cross-node pool.** To survive node loss, point the `fs` tier's `root_dir` at a pool on a `ReadWriteMany` volume instead of the node's tmpfs, run one pool manager for it (a Deployment with one replica instead of the DaemonSet), and set `shared: pool` on the router's `storage` tier. The router keys shared scopes by the event's medium, and every `fs` tier reports `STORAGE`, so a deployment uses either node-scoped or pool-scoped sharing, not both.
 - **Replica placement.** The model servers prefer to pack onto one node so more replicas share a pool. Use `requiredDuringScheduling` affinity to force it.
